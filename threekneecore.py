@@ -281,7 +281,7 @@ class threekneeCore(QThread):
         
         # 2. Apply Otsu's thresholding
         _, otsu_thresh = cv2.threshold(blurred, 
-                                    30,  # Threshold value is ignored with THRESH_OTSU 
+                                    threshold,  # Threshold value is ignored with THRESH_OTSU 
                                     255, 
                                     cv2.THRESH_BINARY_INV)
         
