@@ -250,179 +250,150 @@ def apply_colormap(frames, colormap_name='jet', normalize=True):
     
     return colored_frames
 
-def visualize_3d_volume(frames, masks, use_color=True, voxel_size=1.1, downsample_factor=1, max_points=2000000, preserve_boundary_frames=True):
+def visualize_3d_volume(frames, masks, use_color=True, voxel_size=1.1):
     """
-    Create a 3D voxel grid visualization from masked frames.
+    Create a 3D voxel grid visualization from masked frames using an efficient
+    visibility check based on a 5-channel representation.
+    
     Args:
         frames (list): Original frames (grayscale or color)
         masks (list): Segmentation masks
         use_color (bool): Whether to use color information or grayscale
         voxel_size (float): Size of voxels in the final grid
-        downsample_factor (int): Skip every N pixels to reduce data
-        max_points (int): Maximum number of points to process
-        preserve_boundary_frames (bool): Whether to preserve all points in first and last frames
     """
-    import numpy as np
-    import open3d as o3d
-    from tqdm import tqdm
-    import time
     
     start_time = time.time()
     
-    # Preprocessing: determine total number of points and calculate appropriate downsampling
-    total_points = sum(np.sum(mask >= 255) for mask in masks)
-    print(f"Total potential points: {total_points}")
+    # Get dimensions
+    height, width = masks[0].shape[:2]
+    depth = len(frames)
     
-    # Auto-adjust downsample factor if needed
-    if total_points > max_points and downsample_factor == 1:
-        # Count points in first and last frame if we're preserving them
-        first_last_points = 0
-        if preserve_boundary_frames and len(masks) >= 2:
-            first_last_points = np.sum(masks[0] >= 255) + np.sum(masks[-1] >= 255)
-            remaining_points = total_points - first_last_points
-            # Calculate downsample factor for middle frames
-            if remaining_points > 0:
-                downsample_factor = int(np.ceil((total_points - first_last_points) / 
-                                             (max_points - first_last_points)))
-        else:
-            downsample_factor = int(np.ceil(total_points / max_points))
-            
-        print(f"Auto-adjusting downsample factor to {downsample_factor}")
+    print(f"Volume dimensions: {width}x{height}x{depth}")
     
-    # Pre-allocate arrays instead of appending
-    estimated_points = min(total_points, max_points)
-    voxels = np.zeros((estimated_points, 3), dtype=np.float32)
-    colors = np.zeros((estimated_points, 3), dtype=np.float32)
+    # Create 5-channel volume matrix: R, G, B, Z, Alpha
+    print("Creating 5-channel volume matrix...")
+    volume = np.zeros((height, width, 5), dtype=np.float32)
     
-    # Vectorized operations for faster processing
-    idx = 0
+    # Fill the volume matrix with data from frames and masks
+    print("Filling volume matrix with frame and mask data...")
     for z, (frame, mask) in enumerate(tqdm(zip(frames, masks), total=len(masks), desc="Processing frames")):
-        # Find indices where mask is non-zero (foreground)
-        y_indices, x_indices = np.where(mask >= 255)
+        # Process only pixels where the mask is non-zero
+        mask_indices = mask >= 255
         
-        # Apply downsampling, but preserve first and last frames if requested
-        is_boundary_frame = preserve_boundary_frames and (z == 0 or z == len(frames) - 1)
+        if not np.any(mask_indices):
+            continue
         
-        if downsample_factor > 1 and not is_boundary_frame:
-            points_count = len(y_indices)
-            indices = np.arange(0, points_count, downsample_factor)
-            y_indices = y_indices[indices]
-            x_indices = x_indices[indices]
+        # Update the alpha channel (from mask)
+        volume[:, :, 4] = np.maximum(volume[:, :, 4], mask_indices.astype(np.float32))
         
-        # Check if adding these points would exceed our limits
-        num_points = len(y_indices)
-        if idx + num_points > estimated_points:
-            # If this is a boundary frame and we're preserving them, make special efforts
-            if is_boundary_frame and idx < estimated_points:
-                # Take as many points as we can from boundary frame
-                available_space = estimated_points - idx
-                # Systematic sampling to preserve structure if we can't take all points
-                if available_space < num_points:
-                    sampling_rate = max(1, int(num_points / available_space))
-                    y_indices = y_indices[::sampling_rate][:available_space]
-                    x_indices = x_indices[::sampling_rate][:available_space]
-                    num_points = len(y_indices)
-                    print(f"Preserved {num_points} points from boundary frame {z} (sampling 1/{sampling_rate})")
+        # For pixels with non-zero masks, update the z-value if this is the highest z so far
+        # This ensures we store the frontmost visible z-value
+        current_z_values = volume[:, :, 3]
+        update_indices = (mask_indices) & ((z > current_z_values) | (current_z_values == 0))
+        
+        if np.any(update_indices):
+            # Update z-channel
+            volume[update_indices, 3] = z
+            
+            # Update color channels
+            if use_color and len(frame.shape) == 3:  # Color frame (RGB)
+                volume[update_indices, 0] = frame[update_indices, 0] / 255.0  # R
+                volume[update_indices, 1] = frame[update_indices, 1] / 255.0  # G
+                volume[update_indices, 2] = frame[update_indices, 2] / 255.0  # B
+            else:  # Grayscale
+                intensity = frame[update_indices] / 255.0
+                volume[update_indices, 0] = intensity  # R
+                volume[update_indices, 1] = intensity  # G
+                volume[update_indices, 2] = intensity  # B
+    
+    # Now determine visible voxels (those with at least one empty/transparent neighbor)
+    print("Determining visible voxels...")
+    
+    # Create 3D mask array matching the dimensions of frames
+    visible_voxels = np.zeros((height, width, depth), dtype=bool)
+    alpha_volume = np.zeros((height, width, depth), dtype=bool)
+    
+    # First, mark all voxels from the masks
+    for z, mask in enumerate(tqdm(masks, desc="Creating 3D alpha volume")):
+        alpha_volume[:, :, z] = (mask >= 255)
+    
+    # Check for empty neighbors (6-connectivity)
+    print("Checking for visible faces...")
+    
+    # Pad the alpha volume to handle boundary checks more easily
+    padded_alpha = np.pad(alpha_volume, ((1, 1), (1, 1), (1, 1)), mode='constant', constant_values=0)
+    
+    # Define the 6 neighbor directions
+    neighbors = [
+        (0, 0, 1),  # front
+        (0, 0, -1), # back
+        (0, 1, 0),  # top
+        (0, -1, 0), # bottom
+        (1, 0, 0),  # right
+        (-1, 0, 0)  # left
+    ]
+    
+    # Check each voxel's neighbors
+    for z in tqdm(range(depth), desc="Finding visible voxels"):
+        for y in range(height):
+            for x in range(width):
+                # Skip empty voxels
+                if not alpha_volume[y, x, z]:
+                    continue
+                
+                # Check if any of the 6 neighbors is empty
+                for dx, dy, dz in neighbors:
+                    nx, ny, nz = x + dx + 1, y + dy + 1, z + dz + 1  # +1 due to padding
+                    
+                    # If any neighbor is empty, mark this voxel as visible
+                    if not padded_alpha[ny, nx, nz]:
+                        visible_voxels[y, x, z] = True
+                        break
+    
+    # Count visible voxels
+    num_visible = np.sum(visible_voxels)
+    print(f"Found {num_visible} visible voxels out of {np.sum(alpha_volume)} total filled voxels")
+    
+    # Create point cloud for visible voxels
+    print("Creating point cloud from visible voxels...")
+    points = []
+    colors = []
+    
+    for z in tqdm(range(depth), desc="Creating visible voxel point cloud"):
+        y_indices, x_indices = np.where(visible_voxels[:, :, z])
+        
+        for y, x in zip(y_indices, x_indices):
+            points.append([x, y, z])
+            
+            # Get color from volume matrix
+            if use_color:
+                colors.append([
+                    volume[y, x, 0],  # R
+                    volume[y, x, 1],  # G
+                    volume[y, x, 2]   # B
+                ])
             else:
-                # Standard truncation for non-boundary frames
-                num_points = estimated_points - idx
-                if num_points <= 0:
-                    print(f"Reached maximum point limit. Using {idx} points.")
-                    break
-                y_indices = y_indices[:num_points]
-                x_indices = x_indices[:num_points]
-        
-        if is_boundary_frame:
-            print(f"Frame {z}: Preserving all {num_points} points (boundary frame)")
-            
-        # Create batch of 3D points
-        voxels[idx:idx+num_points, 0] = x_indices
-        voxels[idx:idx+num_points, 1] = y_indices
-        voxels[idx:idx+num_points, 2] = z
-        
-        # Determine colors in a vectorized way
-        if use_color and len(frame.shape) == 3:  # Color frame (RGB)
-            # Vectorized color extraction
-            colors[idx:idx+num_points, 0] = frame[y_indices, x_indices, 0] / 255.0  # R
-            colors[idx:idx+num_points, 1] = frame[y_indices, x_indices, 1] / 255.0  # G
-            colors[idx:idx+num_points, 2] = frame[y_indices, x_indices, 2] / 255.0  # B
-        else:  # Grayscale
-            # Vectorized grayscale extraction
-            intensity = frame[y_indices, x_indices] / 255.0
-            colors[idx:idx+num_points, 0] = intensity  # R
-            colors[idx:idx+num_points, 1] = intensity  # G
-            colors[idx:idx+num_points, 2] = intensity  # B
-            
-        idx += num_points
+                # Use z-value for grayscale coloring
+                normalized_z = z / depth
+                colors.append([normalized_z, normalized_z, normalized_z])
     
-    # Trim arrays to actual size
-    voxels = voxels[:idx]
-    colors = colors[:idx]
-    
-    print(f"Generados {idx} voxels en {time.time() - start_time:.2f} segundos")
+    print(f"Created point cloud with {len(points)} points")
     
     # Create Open3D point cloud
     pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(voxels)
-    pcd.colors = o3d.utility.Vector3dVector(colors)
-    print("Creada nube de puntos")
-    
-    # Optional: Further downsample the point cloud if still too large, 
-    # but preserve boundary points if possible
-    if len(voxels) > max_points // 2:
-        # Extract boundary points (z=0 and z=max)
-        if preserve_boundary_frames:
-            z_values = np.asarray(pcd.points)[:, 2]
-            min_z, max_z = np.min(z_values), np.max(z_values)
-            
-            boundary_indices = np.where((z_values == min_z) | (z_values == max_z))[0]
-            boundary_points = np.asarray(pcd.points)[boundary_indices]
-            boundary_colors = np.asarray(pcd.colors)[boundary_indices]
-            
-            # Downsample non-boundary points
-            non_boundary_indices = np.where((z_values != min_z) & (z_values != max_z))[0]
-            non_boundary_pcd = o3d.geometry.PointCloud()
-            non_boundary_pcd.points = o3d.utility.Vector3dVector(np.asarray(pcd.points)[non_boundary_indices])
-            non_boundary_pcd.colors = o3d.utility.Vector3dVector(np.asarray(pcd.colors)[non_boundary_indices])
-            
-            # Downsample non-boundary points
-            print(f"Downsampling non-boundary point cloud with voxel size {voxel_size/2}")
-            downsampled_pcd = non_boundary_pcd.voxel_down_sample(voxel_size=voxel_size/2)
-            
-            # Combine boundary and downsampled points
-            downsampled_points = np.asarray(downsampled_pcd.points)
-            downsampled_colors = np.asarray(downsampled_pcd.colors)
-            
-            combined_points = np.vstack((boundary_points, downsampled_points))
-            combined_colors = np.vstack((boundary_colors, downsampled_colors))
-            
-            pcd = o3d.geometry.PointCloud()
-            pcd.points = o3d.utility.Vector3dVector(combined_points)
-            pcd.colors = o3d.utility.Vector3dVector(combined_colors)
-            
-            print(f"Point cloud downsampled to {len(pcd.points)} points (preserved {len(boundary_points)} boundary points)")
-        else:
-            # Standard downsampling for all points
-            print(f"Downsampling entire point cloud with voxel size {voxel_size/2}")
-            pcd = pcd.voxel_down_sample(voxel_size=voxel_size/2)
-            print(f"Point cloud downsampled to {len(pcd.points)} points")
+    pcd.points = o3d.utility.Vector3dVector(np.array(points))
+    pcd.colors = o3d.utility.Vector3dVector(np.array(colors))
     
     # Create voxel grid
-    print(f"Creando malla de voxeles con tamaño {voxel_size}")
+    print(f"Creating voxel grid with size {voxel_size}")
     voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(
         pcd,
         voxel_size=voxel_size
     )
-    print("Creada malla de voxeles")
     
     # Visualize
-    print("Visualizando malla de voxeles")
+    print("Visualizing voxel grid")
     o3d.visualization.draw_geometries([voxel_grid])
-    
-    total_time = time.time() - start_time
-    print(f"Tiempo total de procesamiento: {total_time:.2f} segundos")
-    
-    return voxel_grid, pcd
 
 def main():
     # Path to your MP4 video file
@@ -458,7 +429,7 @@ def main():
     save_segmented_frames(frames_for_viz, masks)
     
     # Visualize 3D volume
-    visualize_3d_volume(frames_for_viz, masks, use_color=apply_color)
+    #visualize_3d_volume(frames_for_viz, masks, use_color=apply_color)
     
 
 if __name__ == "__main__":

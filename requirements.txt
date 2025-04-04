@@ -1,2 +1,3 @@
 pip install opencv-python open3d matplotlib scikit-image
 nibabel
+tk
