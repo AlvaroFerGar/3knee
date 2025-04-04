@@ -73,6 +73,57 @@ def interpolate_frames(frames, num_intermediate=2):
     
     return interpolated_frames
 
+def apply_clahe_enhancement(frames, clip_limit=2.0, tile_grid_size=(8, 8)):
+    """
+    Apply Contrast Limited Adaptive Histogram Equalization to enhance image contrast.
+    
+    Args:
+        frames (list): List of grayscale frames to enhance
+        clip_limit (float): Threshold for contrast limiting
+        tile_grid_size (tuple): Size of grid for histogram equalization
+        
+    Returns:
+        list: Enhanced frames
+    """
+    import cv2
+    import numpy as np
+    from tqdm import tqdm
+    
+    enhanced_frames = []
+    
+    # Create CLAHE object
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+    
+    for frame in tqdm(frames, desc="Applying CLAHE enhancement"):
+        # If frame has 3 channels, convert to LAB color space and enhance L channel
+        if len(frame.shape) == 3 and frame.shape[2] == 3:
+            # Convert to LAB
+            lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+            
+            # Split channels
+            l, a, b = cv2.split(lab)
+            
+            # Apply CLAHE to L channel
+            enhanced_l = clahe.apply(l)
+            
+            # Merge channels back
+            enhanced_lab = cv2.merge((enhanced_l, a, b))
+            
+            # Convert back to BGR
+            enhanced_frame = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+        else:
+            # For grayscale images
+            # Ensure the frame is in uint8 format
+            if frame.dtype != np.uint8:
+                frame = np.clip(frame, 0, 255).astype(np.uint8)
+            
+            # Apply CLAHE directly
+            enhanced_frame = clahe.apply(frame)
+        
+        enhanced_frames.append(enhanced_frame)
+    
+    return enhanced_frames
+
 def segment_knee(frame):
     """
     Segment the knee using Otsu's thresholding method.
@@ -181,8 +232,8 @@ def save_segmented_frames(frames, masks):
         cv2.imwrite(output_path, rgba_image)
         
         # Optional: save original and mask separately for additional debugging
-        #cv2.imwrite(f'debug_frames/frame_{i:04d}_original.png', frame)
-        #cv2.imwrite(f'debug_frames/frame_{i:04d}_mask.png', mask)
+        cv2.imwrite(f'debug_frames/frame_{i:04d}_original.png', frame)
+        cv2.imwrite(f'debug_frames/frame_{i:04d}_mask.png', mask)
         
 
 def apply_colormap(frames, colormap_name='jet', normalize=True):
@@ -221,7 +272,9 @@ def apply_colormap(frames, colormap_name='jet', normalize=True):
         'viridis': cv2.COLORMAP_VIRIDIS,
         'cividis': cv2.COLORMAP_CIVIDIS,
         'twilight': cv2.COLORMAP_TWILIGHT,
-        'twilight_shifted': cv2.COLORMAP_TWILIGHT_SHIFTED
+        'twilight_shifted': cv2.COLORMAP_TWILIGHT_SHIFTED,
+        'turbo': cv2.COLORMAP_TURBO,
+        'deepgreen': cv2.COLORMAP_DEEPGREEN
     }
     
     # Verificar que el colormap solicitado existe
@@ -402,7 +455,11 @@ def main():
     # Parámetros configurables
     num_intermediate_frames = 10  # Número de frames a interpolar entre cada par
     apply_color = True           # Aplicar mapa de colores a los frames
-    colormap_name = 'twilight_shifted'        # Nombre del mapa de colores
+    colormap_name = 'turbo'        # Nombre del mapa de colores
+    # CLAHE parameters
+    apply_clahe = True  # Apply CLAHE histogram equalization
+    clip_limit = 2.0
+    tile_grid_size = (8, 8)
     
     # Load frames
     frames = load_mp4_frames(video_path)
@@ -412,9 +469,17 @@ def main():
     interpolated_frames = interpolate_frames(frames, num_intermediate=num_intermediate_frames)
     print(f"Generated {len(interpolated_frames)} frames after interpolation")
     
+    # Apply CLAHE histogram equalization if enabled
+    if apply_clahe:
+        interpolated_clahe_frames = apply_clahe_enhancement(interpolated_frames, clip_limit, tile_grid_size)
+        print(f"Applied CLAHE enhancement with clip limit {clip_limit} and grid size {tile_grid_size}")
+    else:
+        interpolated_clahe_frames = interpolated_frames
+        print(f"CLAHE enhancement not applied")
+
     # Aplicar mapa de colores si está habilitado
     if apply_color:
-        colored_frames = apply_colormap(interpolated_frames, colormap_name=colormap_name)
+        colored_frames = apply_colormap(interpolated_clahe_frames, colormap_name=colormap_name)
         print(f"Applied '{colormap_name}' colormap to frames")
         # Usamos los frames coloreados para visualización
         frames_for_viz = colored_frames
@@ -429,7 +494,7 @@ def main():
     save_segmented_frames(frames_for_viz, masks)
     
     # Visualize 3D volume
-    #visualize_3d_volume(frames_for_viz, masks, use_color=apply_color)
+    visualize_3d_volume(frames_for_viz, masks, use_color=apply_color)
     
 
 if __name__ == "__main__":
