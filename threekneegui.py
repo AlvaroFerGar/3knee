@@ -18,11 +18,6 @@ class Open3DWidget(QWidget):
         layout = QVBoxLayout()
         self.setLayout(layout)
         
-        # Create a placeholder label
-        self.placeholder = QLabel("3D visualization will appear here")
-        self.placeholder.setAlignment(Qt.AlignCenter)
-        self.placeholder.setStyleSheet("border: 1px solid gray;")
-        layout.addWidget(self.placeholder)
         
     def setup_visualization(self, geometry):
         self.geometry = geometry
@@ -59,7 +54,7 @@ class threekneeGUI(QMainWindow):
         
     def init_ui(self):
         self.setWindowTitle("MRI Knee Processing GUI")
-        self.setGeometry(100, 100, 1200, 800)
+        #self.setGeometry(100, 100, 1200, 800)
         
         # Main layout
         central_widget = QWidget()
@@ -189,7 +184,7 @@ class threekneeGUI(QMainWindow):
         
         # 3D visualization area
         self.open3d_widget = Open3DWidget()
-        main_layout.addWidget(self.open3d_widget, 1)
+        #main_layout.addWidget(self.open3d_widget, 1)
         
     def update_threshold_label(self):
         self.threshold_value_label.setText(str(self.threshold_slider.value()))
