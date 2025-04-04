@@ -41,7 +41,10 @@ class threekneeCore(QThread):
                 self.progress.emit(f"Applying {self.params['colormap_name']} colormap...")
                 colored_frames = self.apply_colormap(
                     interpolated_clahe_frames, 
-                    self.params['colormap_name']
+                    self.params['colormap_name'],
+                    True,
+                    self.params['segment_minthreshold'],
+                    self.params['segment_maxthreshold'],
                 )
                 frames_for_viz = colored_frames
                 self.progress.emit("Colormap applied")
@@ -50,7 +53,7 @@ class threekneeCore(QThread):
                 self.progress.emit("Using grayscale frames")
             
             self.progress.emit("Segmenting knee in each frame...")
-            masks = [self.segment_knee(frame, self.params['segment_threshold']) for frame in interpolated_frames]
+            masks = [self.segment_knee(frame, self.params['segment_minthreshold'],self.params['segment_maxthreshold']) for frame in interpolated_clahe_frames]
             
             # Save for debugging if requested
             if self.params['save_debug_frames']:
@@ -190,7 +193,7 @@ class threekneeCore(QThread):
         
         return enhanced_frames
     
-    def apply_colormap(self, frames, colormap_name='turbo', normalize=True):
+    def apply_colormap(self, frames, colormap_name='turbo', normalize=True, min_value=0, max_value=255):
         """
         Aplica un mapa de colores a los frames en escala de grises.
         
@@ -243,7 +246,9 @@ class threekneeCore(QThread):
             # Normalizar el frame si es necesario
             if normalize:
                 # Convertir a float32 para evitar problemas con la normalización
-                frame_normalized = cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX)
+                print(f"Normalizando frame con rango {min_value} a {max_value}")
+                frame = np.clip(frame, min_value, max_value)  # Ensure values stay in range
+                frame_normalized = ((frame - min_value) / (max_value - min_value) * 255).astype(np.uint8)  # Normalize to [0, 255]
             else:
                 frame_normalized = frame.copy()
                 
@@ -257,7 +262,7 @@ class threekneeCore(QThread):
         
         return colored_frames
     
-    def segment_knee(self, frame, threshold=127):
+    def segment_knee(self, frame, thresholdmin=0, thresholdmax=255):
         """
         Segment the knee using Otsu's thresholding method.
         
@@ -279,56 +284,39 @@ class threekneeCore(QThread):
                                     GAUSSIAN_BLUR_KERNEL, 
                                     0)  # Sigma 0 means auto-calculate
         
-        # 2. Apply Otsu's thresholding
-        _, otsu_thresh = cv2.threshold(blurred, 
-                                    threshold,  # Threshold value is ignored with THRESH_OTSU 
-                                    255, 
-                                    cv2.THRESH_BINARY_INV)
+            # 2. Get reference values from first rows and columns
+        row_value = np.median(frame[0, :])  # Median value of the first row
+        col_value = np.median(frame[:, 0])  # Median value of the first column
         
-        # 3. Morphological operations to clean up the image
-        # Create kernels
-        open_kernel = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE, 
-            (MORPH_OPEN_KERNEL_SIZE, MORPH_OPEN_KERNEL_SIZE)
-        )
-        close_kernel = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE, 
-            (MORPH_CLOSE_KERNEL_SIZE, MORPH_CLOSE_KERNEL_SIZE)
-        )
-        
-        # Opening to remove small white noise
-        opened = cv2.morphologyEx(otsu_thresh, cv2.MORPH_OPEN, open_kernel)
-        
-        # Closing to close small holes
+        # 3. Create a binary mask based on these values
+        threshold_range = 10  # Define an acceptable range around the values
+        mask = np.zeros(frame.shape, dtype=np.uint8)
+        mask[np.abs(frame - row_value) < threshold_range] = 255
+        mask[np.abs(frame - col_value) < threshold_range] = 255
+        mask[(frame < thresholdmin) | (frame > thresholdmax)] = 255
+
+        # 4. Morphological operations to clean up the mask
+        open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (MORPH_OPEN_KERNEL_SIZE, MORPH_OPEN_KERNEL_SIZE))
+        close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (MORPH_CLOSE_KERNEL_SIZE, MORPH_CLOSE_KERNEL_SIZE))
+        opened = cv2.morphologyEx(mask, cv2.MORPH_OPEN, open_kernel)
         closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, close_kernel)
         
-        # 4. Find connected components
+        # 5. Find connected components
         num_labels, labels = cv2.connectedComponents(closed)
         
-        # 5. Filter components based on size
-        # Calculate area threshold
+        # 6. Filter components based on size
         min_area = frame.size * AREA_THRESHOLD_PERCENT
-        
-        # Find components and their sizes
         unique, counts = np.unique(labels, return_counts=True)
-        
-        # Sort components by size (excluding background)
         component_sizes = dict(zip(unique[1:], counts[1:]))
-        sorted_components = sorted(
-            component_sizes.items(), 
-            key=lambda x: x[1], 
-            reverse=True
-        )
+        sorted_components = sorted(component_sizes.items(), key=lambda x: x[1], reverse=True)
         
-        # Create the final mask
-        mask = np.ones(frame.shape, dtype=np.uint8)*255
-        
-        # Add only sufficiently large components
+        # 7. Create the final mask
+        final_mask = np.ones(frame.shape, dtype=np.uint8) * 255
         for component, size in sorted_components:
             if size > min_area:
-                mask[labels == component] = 0
+                final_mask[labels == component] = 0
         
-        return mask
+        return final_mask
 
     
     def save_segmented_frames(self, frames, masks):
@@ -483,18 +471,11 @@ class threekneeCore(QThread):
             
             for y, x in zip(y_indices, x_indices):
                 points.append([x, y, z])
-                
-                # Get color from volume matrix
-                if use_color:
-                    colors.append([
-                        volume[y, x, 0],  # R
-                        volume[y, x, 1],  # G
-                        volume[y, x, 2]   # B
-                    ])
-                else:
-                    # Use z-value for grayscale coloring
-                    normalized_z = z / depth
-                    colors.append([normalized_z, normalized_z, normalized_z])
+                colors.append([
+                    volume[y, x, 0],  # R
+                    volume[y, x, 1],  # G
+                    volume[y, x, 2]   # B
+                ])
         
         print(f"Created point cloud with {len(points)} points")
         

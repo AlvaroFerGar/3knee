@@ -134,14 +134,22 @@ class threekneeGUI(QMainWindow):
         # Segmentation settings
         segment_group = QGroupBox("Segmentation")
         segment_layout = QVBoxLayout()
-        segment_layout.addWidget(QLabel("Threshold:"))
-        self.threshold_slider = QSlider(Qt.Horizontal)
-        self.threshold_slider.setRange(0, 255)
-        self.threshold_slider.setValue(127)
-        self.threshold_value_label = QLabel("127")
-        self.threshold_slider.valueChanged.connect(self.update_threshold_label)
-        segment_layout.addWidget(self.threshold_slider)
-        segment_layout.addWidget(self.threshold_value_label)
+        segment_layout.addWidget(QLabel("min Threshold:"))
+        self.min_threshold_slider = QSlider(Qt.Horizontal)
+        self.min_threshold_slider.setRange(0, 255)
+        self.min_threshold_slider.setValue(0)
+        self.min_threshold_value_label = QLabel("0")
+        self.min_threshold_slider.valueChanged.connect(self.update_minthreshold_label)
+        segment_layout.addWidget(self.min_threshold_slider)
+        segment_layout.addWidget(self.min_threshold_value_label)
+        segment_layout.addWidget(QLabel("max Threshold:"))
+        self.max_threshold_slider = QSlider(Qt.Horizontal)
+        self.max_threshold_slider.setRange(0, 255)
+        self.max_threshold_slider.setValue(255)
+        self.max_threshold_value_label = QLabel("255")
+        self.max_threshold_slider.valueChanged.connect(self.update_maxthreshold_label)
+        segment_layout.addWidget(self.max_threshold_slider)
+        segment_layout.addWidget(self.max_threshold_value_label)
         segment_group.setLayout(segment_layout)
         control_layout.addWidget(segment_group)
         
@@ -185,9 +193,12 @@ class threekneeGUI(QMainWindow):
         # 3D visualization area
         self.open3d_widget = Open3DWidget()
         #main_layout.addWidget(self.open3d_widget, 1)
-        
-    def update_threshold_label(self):
-        self.threshold_value_label.setText(str(self.threshold_slider.value()))
+
+    def update_minthreshold_label(self):
+        self.min_threshold_value_label.setText(str(self.min_threshold_slider.value()))
+
+    def update_maxthreshold_label(self):
+        self.max_threshold_value_label.setText(str(self.max_threshold_slider.value()))
         
     def browse_file(self):
         file_dialog = QFileDialog()
@@ -216,7 +227,8 @@ class threekneeGUI(QMainWindow):
             'tile_grid_size': (self.clahe_tile_spin.value(), self.clahe_tile_spin.value()),
             'apply_color': self.apply_color_checkbox.isChecked(),
             'colormap_name': self.colormap_combo.currentText(),
-            'segment_threshold': self.threshold_slider.value(),
+            'segment_minthreshold': self.min_threshold_slider.value(),
+            'segment_maxthreshold': self.max_threshold_slider.value(),
             'voxel_size': self.voxel_size_spin.value(),
             'save_debug_frames': self.save_debug_checkbox.isChecked()
         }
