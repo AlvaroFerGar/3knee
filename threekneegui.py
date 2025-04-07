@@ -27,7 +27,7 @@ class Open3DWidget(QWidget):
             self.vis.destroy_window()
             
         self.vis = o3d.visualization.Visualizer()
-        self.vis.create_window(window_name="Knee MRI 3D View", width=800, height=600)
+        self.vis.create_window(window_name="3Knee View", width=800, height=600)
         self.vis.add_geometry(geometry)
         
         # Set rendering options
@@ -53,7 +53,7 @@ class threekneeGUI(QMainWindow):
         self.pcd = None
         
     def init_ui(self):
-        self.setWindowTitle("MRI Knee Processing GUI")
+        self.setWindowTitle("3Knee GUI")
         #self.setGeometry(100, 100, 1200, 800)
         
         # Main layout
